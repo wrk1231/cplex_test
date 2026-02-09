@@ -220,3 +220,172 @@ def solve_mvo_factor_auxiliary(alpha, B, F, D, lambda_risk=1, L1_limit=None, fac
     except cplex.CplexError as exc:
         print(f"CPLEX Error: {exc}")
         return None
+def solve_mvo_soft_l1(alpha, B, F, D, lambda_risk=1.0, l1_penalty=0.0):
+    """
+    Solves MVO with soft L1 penalty.
+    Objective: Maximize alpha^T w - lambda_risk * (y^T F y + w^T D w) - l1_penalty * ||w||_1
+    where y = B^T w
+    """
+    try:
+        n, k = B.shape
+
+        prob = cplex.Cplex()
+        prob.set_log_stream(None)
+        prob.set_results_stream(None)
+        prob.set_warning_stream(None)
+        prob.objective.set_sense(prob.objective.sense.maximize)
+
+        # Variables w (n)
+        prob.variables.add(
+            obj=alpha.tolist(),
+            lb=[-cplex.infinity] * n,
+            ub=[cplex.infinity] * n,
+            names=[f"w_{i}" for i in range(n)]
+        )
+
+        # Variables y (k) for factor exposures y = B^T w
+        # Objective coeff 0 for y (risk is quadratic)
+        prob.variables.add(
+            obj=[0.0] * k,
+            lb=[-cplex.infinity] * k,
+            ub=[cplex.infinity] * k,
+            names=[f"y_{j}" for j in range(k)]
+        )
+        
+        idx_w_start = 0
+        idx_y_start = n
+        var_offset = n + k
+
+        # Variables z (n) for L1 soft penalty: z_i >= |w_i|
+        # Objective contribution: -l1_penalty * z_i
+        idx_z_start = None
+        if l1_penalty > 0:
+            idx_z_start = var_offset
+            prob.variables.add(
+                obj=[-l1_penalty] * n,
+                lb=[0.0] * n,
+                ub=[cplex.infinity] * n,
+                names=[f"z_{i}" for i in range(n)]
+            )
+            var_offset += n
+
+        # Constraints y = B^T w => B^T w - y = 0
+        for j in range(k):
+            # sum_i (B[i, j] * w_i) - y_j = 0
+            indices = list(range(n)) + [idx_y_start + j]
+            values = B[:, j].tolist() + [-1.0]
+            prob.linear_constraints.add(
+                lin_expr=[cplex.SparsePair(ind=indices, val=values)],
+                senses=["E"],
+                rhs=[0.0]
+            )
+
+        # Constraints z_i >= |w_i|
+        if idx_z_start is not None:
+            for i in range(n):
+                # z_i - w_i >= 0  => w_i - z_i <= 0
+                prob.linear_constraints.add(
+                    lin_expr=[cplex.SparsePair(ind=[i, idx_z_start + i], val=[1.0, -1.0])],
+                    senses=["L"],
+                    rhs=[0.0]
+                )
+                # z_i + w_i >= 0 => -w_i - z_i <= 0
+                prob.linear_constraints.add(
+                    lin_expr=[cplex.SparsePair(ind=[i, idx_z_start + i], val=[-1.0, -1.0])],
+                    senses=["L"],
+                    rhs=[0.0]
+                )
+
+        # Quadratic objective: -lambda_risk * (y^T F y + w^T D w)
+        quad_coeffs = []
+        
+        # y^T F y
+        if F.ndim == 1 or (F.ndim == 2 and np.allclose(F, np.diag(np.diag(F)))):
+            F_diag = F if F.ndim == 1 else np.diag(F)
+            for j in range(k):
+                if abs(F_diag[j]) > 1e-10:
+                    quad_coeffs.append((idx_y_start + j, idx_y_start + j, -2.0 * lambda_risk * F_diag[j]))
+        else:
+            for i in range(k):
+                for j in range(k):
+                    if abs(F[i, j]) > 1e-10:
+                        quad_coeffs.append((idx_y_start + i, idx_y_start + j, -2.0 * lambda_risk * F[i, j]))
+
+        # w^T D w
+        D_diag = D if D.ndim == 1 else np.diag(D)
+        for i in range(n):
+            if abs(D_diag[i]) > 1e-10:
+                quad_coeffs.append((i, i, -2.0 * lambda_risk * D_diag[i]))
+
+        prob.objective.set_quadratic_coefficients(quad_coeffs)
+
+        # Parameters
+        prob.parameters.threads.set(0)
+        prob.parameters.qpmethod.set(prob.parameters.qpmethod.values.barrier)
+        prob.parameters.barrier.convergetol.set(1e-6)
+        prob.parameters.preprocessing.presolve.set(1)
+        prob.parameters.preprocessing.reduce.set(3)
+        
+        prob.solve()
+
+        sol_weights = np.array(prob.solution.get_values()[:n])
+        obj_val = prob.solution.get_objective_value()
+        status = prob.solution.get_status_string()
+        l1_norm = np.sum(np.abs(sol_weights))
+
+        return {
+            "weights": sol_weights,
+            "objective": obj_val,
+            "status": status,
+            "L1_norm": l1_norm
+        }
+
+    except cplex.CplexError as exc:
+        print(f"CPLEX Error: {exc}")
+        return None
+
+if __name__ == "__main__":
+    print("\n" + "="*40)
+    print("Testing solve_mvo_soft_l1")
+    print("="*40)
+    
+    np.random.seed(42)
+    n_assets = 20
+    n_factors = 3
+    
+    alpha_ex = np.random.randn(n_assets) * 0.05
+    B_ex = np.random.randn(n_assets, n_factors)
+    F_ex = np.diag(np.random.rand(n_factors) * 0.1)
+    D_ex = np.random.rand(n_assets) * 0.05
+    
+    l1_pen = 0.01
+    print(f"Running MVO with Soft L1 Penalty = {l1_pen}")
+    
+    result = solve_mvo_soft_l1(
+        alpha=alpha_ex,
+        B=B_ex,
+        F=F_ex,
+        D=D_ex,
+        lambda_risk=1.0,
+        l1_penalty=l1_pen
+    )
+    
+    if result:
+        print(f"Status:     {result['status']}")
+        print(f"Objective:  {result['objective']:.6f}")
+        print(f"L1 Norm:    {result['L1_norm']:.6f}")
+        
+        # Display weights parsimoniously (e.g. non-zero or largest)
+        w = result['weights']
+        # Filter small weights
+        mask = np.abs(w) > 1e-4
+        n_active = np.sum(mask)
+        print(f"Active positions (>1e-4): {n_active}/{n_assets}")
+        
+        # Show top 5 by magnitude
+        indices = np.argsort(-np.abs(w))[:5]
+        print("Top 5 Weights:")
+        for idx in indices:
+            print(f"  Asset {idx:2d}: {w[idx]:.6f}")
+    else:
+        print("Optimization Failed")
