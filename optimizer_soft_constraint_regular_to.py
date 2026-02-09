@@ -95,9 +95,17 @@ def solve_mvo_soft_constraint(alpha, B, F, D, lambda_risk=1.0,
             if penalty_l2_factor == 0:
                 # Hard constraints
                 for j in range(k):
-                    y_lb[j] = factor_bounds_arr[j, 0]
-                    y_ub[j] = factor_bounds_arr[j, 1]
+                    if factor_bounds_arr[j, 0] <= -1e20:
+                         y_lb[j] = -cplex.infinity
+                    else:
+                         y_lb[j] = float(factor_bounds_arr[j, 0])
+                    
+                    if factor_bounds_arr[j, 1] >= 1e20:
+                         y_ub[j] = cplex.infinity
+                    else:
+                         y_ub[j] = float(factor_bounds_arr[j, 1])
             # If soft constraints (penalty > 0), we use aux vars, y bounds are open.
+
         
         prob.variables.add(
             obj=y_obj_coeffs,
@@ -219,19 +227,21 @@ def solve_mvo_soft_constraint(alpha, B, F, D, lambda_risk=1.0,
             for j in range(k):
                 # e_pos_j >= y_j - ub_j  =>  y_j - e_pos_j <= ub_j
                 ub_val = factor_bounds_arr[j, 1]
-                prob.linear_constraints.add(
-                    lin_expr=[cplex.SparsePair(ind=[idx_y_start + j, e_pos_idx + j], val=[1.0, -1.0])],
-                    senses=["L"],
-                    rhs=[float(ub_val)]
-                )
+                if ub_val < 1e20: # Skip if infinite
+                    prob.linear_constraints.add(
+                        lin_expr=[cplex.SparsePair(ind=[idx_y_start + j, e_pos_idx + j], val=[1.0, -1.0])],
+                        senses=["L"],
+                        rhs=[float(ub_val)]
+                    )
                 
                 # e_neg_j >= lb_j - y_j  =>  -y_j - e_neg_j <= -lb_j
                 lb_val = factor_bounds_arr[j, 0]
-                prob.linear_constraints.add(
-                     lin_expr=[cplex.SparsePair(ind=[idx_y_start + j, e_neg_idx + j], val=[-1.0, -1.0])],
-                     senses=["L"],
-                     rhs=[float(-lb_val)]
-                )
+                if lb_val > -1e20: # Skip if infinite
+                    prob.linear_constraints.add(
+                        lin_expr=[cplex.SparsePair(ind=[idx_y_start + j, e_neg_idx + j], val=[-1.0, -1.0])],
+                        senses=["L"],
+                        rhs=[float(-lb_val)]
+                    )
 
         # --- Quadratic Objective ---
         
