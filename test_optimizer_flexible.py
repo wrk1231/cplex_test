@@ -174,6 +174,38 @@ def test_legacy_result_schema_baseline():
     return result
 
 
+def test_legacy_positional_call_compatibility():
+    """
+    solve_mvo_flexible should accept the old positional argument order from
+    optimizer_soft_constraint_regular_to.solve_mvo_soft_constraint.
+    """
+    header("1c. Legacy positional-call compatibility")
+
+    gamma_val = 0.3
+    result = solve_mvo_flexible(
+        alpha,
+        B,
+        F,
+        D,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        w_drift,
+        gamma_val,
+        factor_bounds_default,
+    )
+
+    assert result is not None
+    assert "optimal" in result["status"]
+    assert set(result.keys()) == LEGACY_RESULT_KEYS
+    expected_tc = np.sum(gamma_val * 0.5 * np.abs(result["weights"] - w_drift))
+    assert np.isclose(result["transaction_cost"], expected_tc, atol=1e-5)
+    print(f"  Keys       : {sorted(result.keys())}")
+    print("  PASS: Old positional call pattern works")
+    return result
+
+
 # ════════════════════════════════════════════════════════════════════
 # 2. L1 penalty — soft vs hard
 # ════════════════════════════════════════════════════════════════════
@@ -643,6 +675,41 @@ def test_factor_bounds_hard():
     return result
 
 
+def test_factor_bounds_hard_legacy_default():
+    """
+    With factor_bounds provided and penalty_l2_factor=0, solve_mvo_flexible
+    should match the legacy solver and enforce hard bounds.
+    """
+    header("5aa. Factor Bounds — legacy hard default")
+
+    result = solve_mvo_flexible(
+        alpha=alpha,
+        B=B,
+        F=F,
+        D=D,
+        lambda_risk=1.0,
+        penalty_l1_w=0.0,
+        penalty_l2_w=0.0,
+        penalty_l2_factor=0.0,
+        w_drift=None,
+        gamma=None,
+        factor_bounds=factor_bounds_default,
+    )
+
+    assert result is not None
+    assert "optimal" in result["status"]
+    assert set(result.keys()) == LEGACY_RESULT_KEYS
+    y = result["factor_exposures"]
+    print(f"  Factor exposures: {y.round(5)}")
+    for j in range(k):
+        assert y[j] >= factor_bounds_default[j, 0] - 1e-5, \
+            f"Factor {j}: {y[j]:.6f} < lb {factor_bounds_default[j, 0]}"
+        assert y[j] <= factor_bounds_default[j, 1] + 1e-5, \
+            f"Factor {j}: {y[j]:.6f} > ub {factor_bounds_default[j, 1]}"
+    print("  PASS: penalty_l2_factor=0 matches legacy hard-bound behavior")
+    return result
+
+
 def test_legacy_result_schema_transaction_cost():
     """
     solve_mvo_flexible should keep the same transaction_cost field and
@@ -1084,6 +1151,7 @@ def run_all():
 
     baseline = test_baseline()
     test_legacy_result_schema_baseline()
+    test_legacy_positional_call_compatibility()
 
     # L1
     test_l1_soft(baseline)
@@ -1105,6 +1173,7 @@ def run_all():
 
     # Factor bounds
     test_factor_bounds_hard()
+    test_factor_bounds_hard_legacy_default()
     test_legacy_result_schema_transaction_cost()
     test_factor_bounds_soft()
     test_factor_bounds_soft_increasing_penalty()

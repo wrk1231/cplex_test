@@ -3,11 +3,11 @@ import numpy as np
 
 
 def solve_mvo_flexible(alpha, B, F, D, lambda_risk=1.0,
-                       penalty_l1_w=0.0, l1_limit=None,
-                       penalty_l2_w=0.0, l2_limit=None,
+                       penalty_l1_w=0.0, penalty_l2_w=0.0,
                        penalty_l2_factor=0.0,
-                       w_drift=None, gamma=0.0, turnover_limit=None,
-                       factor_bounds=None):
+                       w_drift=None, gamma=None,
+                       factor_bounds=None,
+                       l1_limit=None, l2_limit=None, turnover_limit=None):
     """
     Solves MVO with flexible soft/hard constraints on all penalty terms.
 
@@ -37,27 +37,27 @@ def solve_mvo_flexible(alpha, B, F, D, lambda_risk=1.0,
     penalty_l1_w : float or 'h'
         float > 0  -> soft:  subtract rho_1 * ||w||_1 from objective
         'h'        -> hard:  enforce ||w||_1 <= l1_limit
-    l1_limit : float or None
-        Required when penalty_l1_w='h'.  L1-norm budget.
-
     penalty_l2_w : float or 'h'
         float > 0  -> soft:  subtract rho_2 * ||w||_2^2 from objective
         'h'        -> hard:  enforce ||w||_2^2 <= l2_limit  (QCQP)
-    l2_limit : float or None
-        Required when penalty_l2_w='h'.  Squared-L2 budget.
 
     penalty_l2_factor : float or 'h'
         float > 0  -> soft:  quadratic deadzone penalty on factor-bound violations
+        0          -> hard:  lb_j <= y_j <= ub_j when factor_bounds is provided
         'h'        -> hard:  lb_j <= y_j <= ub_j
-        Requires factor_bounds.
     factor_bounds : ndarray (k, 2) or None
-        [lb, ub] per factor.  Required when penalty_l2_factor is 'h' or > 0.
+        [lb, ub] per factor.  With penalty_l2_factor=0, behaves like the legacy
+        soft-constraint solver and enforces hard bounds.
 
     w_drift : ndarray (n,) or None
         Reference (current) portfolio for turnover.
     gamma : float, ndarray, or 'h'
         float/arr > 0  -> soft:  subtract gamma * 0.5 * |w - w_drift| from objective
         'h'             -> hard:  enforce sum_i |w_i - w_drift_i| <= turnover_limit
+    l1_limit : float or None
+        Required when penalty_l1_w='h'.  L1-norm budget.
+    l2_limit : float or None
+        Required when penalty_l2_w='h'.  Squared-L2 budget.
     turnover_limit : float or None
         Required when gamma='h'.  Total turnover budget.
 
@@ -106,6 +106,8 @@ def solve_mvo_flexible(alpha, B, F, D, lambda_risk=1.0,
             elif isinstance(penalty_l2_factor, (int, float)) and penalty_l2_factor > 0:
                 factor_mode = 'soft'
                 factor_coeff = float(penalty_l2_factor)
+            elif penalty_l2_factor == 0:
+                factor_mode = 'hard'
         else:
             if penalty_l2_factor == 'h' or (
                     isinstance(penalty_l2_factor, (int, float)) and penalty_l2_factor > 0):
