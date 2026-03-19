@@ -65,7 +65,7 @@ def solve_mvo_flexible(alpha, B, F, D, lambda_risk=1.0,
     -------
     dict with keys:
         weights, factor_exposures, objective, status,
-        L1_norm, L2_norm_sq, factor_diff_sq, transaction_cost, turnover
+        L1_norm, L2_norm_sq, factor_diff_sq, transaction_cost
     """
     try:
         n, k = B.shape
@@ -416,11 +416,6 @@ def solve_mvo_flexible(alpha, B, F, D, lambda_risk=1.0,
             drift_dev = np.abs(weights - w_drift_arr)
             trans_cost = np.sum(gamma_arr * 0.5 * drift_dev)
 
-        # Turnover (absolute drift, regardless of mode)
-        turnover = 0.0
-        if drift_mode != 'off':
-            turnover = np.sum(np.abs(weights - w_drift_arr))
-
         return {
             "weights": weights,
             "factor_exposures": factor_exposures,
@@ -430,7 +425,6 @@ def solve_mvo_flexible(alpha, B, F, D, lambda_risk=1.0,
             "L2_norm_sq": l2_norm_sq,
             "factor_diff_sq": factor_diff_norm_sq,
             "transaction_cost": trans_cost,
-            "turnover": turnover,
         }
 
     except cplex.CplexError as exc:

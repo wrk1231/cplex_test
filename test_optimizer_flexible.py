@@ -24,6 +24,12 @@ def header(title):
     print(f"{'─'*60}")
 
 
+def calc_turnover(result, w_ref):
+    if w_ref is None:
+        return 0.0
+    return float(np.sum(np.abs(result["weights"] - w_ref)))
+
+
 # ════════════════════════════════════════════════════════════════════
 # Input data construction
 # ════════════════════════════════════════════════════════════════════
@@ -84,6 +90,17 @@ factor_bounds_onesided = np.array([
     [-np.inf,  np.inf],   # factor 2: fully free
 ])
 
+LEGACY_RESULT_KEYS = {
+    "weights",
+    "factor_exposures",
+    "objective",
+    "status",
+    "L1_norm",
+    "L2_norm_sq",
+    "factor_diff_sq",
+    "transaction_cost",
+}
+
 
 # ════════════════════════════════════════════════════════════════════
 # 1. Baseline — no penalties at all
@@ -120,6 +137,40 @@ def test_baseline():
     print(f"  L1 norm    : {result['L1_norm']:.4f}")
     print(f"  L2² norm   : {result['L2_norm_sq']:.4f}")
     print("  PASS")
+    return result
+
+
+def test_legacy_result_schema_baseline():
+    """
+    solve_mvo_flexible should return the same result-key schema used by
+    optimizer_soft_constraint_regular_to.py.
+    """
+    header("1b. Legacy result schema compatibility")
+
+    result = solve_mvo_flexible(
+        alpha=alpha,
+        B=B,
+        F=F,
+        D=D,
+        lambda_risk=1.0,
+        penalty_l1_w=0.0,
+        l1_limit=None,
+        penalty_l2_w=0.0,
+        l2_limit=None,
+        penalty_l2_factor=0.0,
+        w_drift=None,
+        gamma=0.0,
+        turnover_limit=None,
+        factor_bounds=None,
+    )
+
+    assert result is not None, "Solver returned None"
+    assert "optimal" in result["status"], f"Non-optimal: {result['status']}"
+    assert set(result.keys()) == LEGACY_RESULT_KEYS, \
+        f"Unexpected legacy keys: {sorted(result.keys())}"
+    print(f"  Status     : {result['status']}")
+    print(f"  Keys       : {sorted(result.keys())}")
+    print("  PASS: solve_mvo_flexible matches old return schema")
     return result
 
 
@@ -349,7 +400,8 @@ def test_turnover_soft():
 
     assert result is not None
     assert "optimal" in result["status"]
-    print(f"  Turnover   : {result['turnover']:.4f}")
+    turnover = calc_turnover(result, w_drift)
+    print(f"  Turnover   : {turnover:.4f}")
     print(f"  Trans cost : {result['transaction_cost']:.6f}")
 
     # Verify TC formula:  sum( gamma * 0.5 * |w - w_drift| )
@@ -391,7 +443,8 @@ def test_turnover_soft_per_asset():
 
     assert result is not None
     assert "optimal" in result["status"]
-    print(f"  Turnover   : {result['turnover']:.4f}")
+    turnover = calc_turnover(result, w_drift)
+    print(f"  Turnover   : {turnover:.4f}")
     print(f"  Trans cost : {result['transaction_cost']:.6f}")
 
     # Verify TC formula with per-asset gamma:
@@ -430,9 +483,10 @@ def test_turnover_hard():
 
     assert result is not None
     assert "optimal" in result["status"]
-    print(f"  Turnover   : {result['turnover']:.4f}  (limit: {LIMIT})")
-    assert result["turnover"] <= LIMIT + 1e-5, \
-        f"Turnover {result['turnover']} exceeds limit {LIMIT}"
+    turnover = calc_turnover(result, w_drift)
+    print(f"  Turnover   : {turnover:.4f}  (limit: {LIMIT})")
+    assert turnover <= LIMIT + 1e-5, \
+        f"Turnover {turnover} exceeds limit {LIMIT}"
     print("  PASS: Turnover within hard limit")
     return result
 
@@ -516,7 +570,7 @@ def test_turnover_zero_gamma_no_drift():
         )
         assert result is not None
         assert "optimal" in result["status"]
-        assert result["turnover"] == 0.0
+        assert calc_turnover(result, None) == 0.0
         assert result["transaction_cost"] == 0.0
     print("  PASS: All zero-gamma variants work without w_drift")
 
@@ -586,6 +640,42 @@ def test_factor_bounds_hard():
         assert y[j] <= factor_bounds_default[j, 1] + 1e-5, \
             f"Factor {j}: {y[j]:.6f} > ub {factor_bounds_default[j, 1]}"
     print("  PASS: All factor exposures within hard bounds")
+    return result
+
+
+def test_legacy_result_schema_transaction_cost():
+    """
+    solve_mvo_flexible should keep the same transaction_cost field and
+    formula used by optimizer_soft_constraint_regular_to.py.
+    """
+    header("5aa. Legacy transaction_cost field compatibility")
+
+    gamma_val = 0.3
+    result = solve_mvo_flexible(
+        alpha=alpha,
+        B=B,
+        F=F,
+        D=D,
+        lambda_risk=1.0,
+        penalty_l1_w=0.0,
+        l1_limit=None,
+        penalty_l2_w=0.0,
+        l2_limit=None,
+        penalty_l2_factor=0.0,
+        w_drift=w_drift,
+        gamma=gamma_val,
+        turnover_limit=None,
+        factor_bounds=None,
+    )
+
+    assert result is not None
+    assert "optimal" in result["status"]
+    assert set(result.keys()) == LEGACY_RESULT_KEYS
+    expected_tc = np.sum(gamma_val * 0.5 * np.abs(result["weights"] - w_drift))
+    assert np.isclose(result["transaction_cost"], expected_tc, atol=1e-5), \
+        f"TC mismatch: got {result['transaction_cost']}, expected {expected_tc}"
+    print(f"  Trans cost : {result['transaction_cost']:.6f}")
+    print("  PASS: solve_mvo_flexible transaction_cost matches old contract")
     return result
 
 
@@ -757,11 +847,12 @@ def test_all_soft():
 
     assert result is not None
     assert "optimal" in result["status"]
+    turnover = calc_turnover(result, w_drift)
     print(f"  Status     : {result['status']}")
     print(f"  Objective  : {result['objective']:.6f}")
     print(f"  L1 norm    : {result['L1_norm']:.4f}")
     print(f"  L2² norm   : {result['L2_norm_sq']:.4f}")
-    print(f"  Turnover   : {result['turnover']:.4f}")
+    print(f"  Turnover   : {turnover:.4f}")
     print(f"  Trans cost : {result['transaction_cost']:.6f}")
     print(f"  Bound viol²: {result['factor_diff_sq']:.6f}")
     print("  PASS")
@@ -799,15 +890,16 @@ def test_all_hard():
     assert result is not None
     assert "optimal" in result["status"]
     y = result["factor_exposures"]
+    turnover = calc_turnover(result, w_drift)
     print(f"  Status     : {result['status']}")
     print(f"  L1 norm    : {result['L1_norm']:.4f}  (limit {L1_LIM})")
     print(f"  L2² norm   : {result['L2_norm_sq']:.4f}  (limit {L2_LIM})")
-    print(f"  Turnover   : {result['turnover']:.4f}  (limit {TO_LIM})")
+    print(f"  Turnover   : {turnover:.4f}  (limit {TO_LIM})")
     print(f"  Factors    : {y.round(5)}")
 
     assert result["L1_norm"]   <= L1_LIM + 1e-5
     assert result["L2_norm_sq"] <= L2_LIM + 1e-5
-    assert result["turnover"]  <= TO_LIM + 1e-5
+    assert turnover <= TO_LIM + 1e-5
     for j in range(len(fb)):
         assert y[j] >= fb[j, 0] - 1e-5
         assert y[j] <= fb[j, 1] + 1e-5
@@ -848,10 +940,11 @@ def test_mixed_hard_soft():
     assert result is not None
     assert "optimal" in result["status"]
     y = result["factor_exposures"]
+    turnover = calc_turnover(result, w_drift)
     print(f"  Status     : {result['status']}")
     print(f"  L1 norm    : {result['L1_norm']:.4f}  (hard limit {L1_LIM})")
     print(f"  L2² norm   : {result['L2_norm_sq']:.4f}  (soft)")
-    print(f"  Turnover   : {result['turnover']:.4f}  (soft)")
+    print(f"  Turnover   : {turnover:.4f}  (soft)")
     print(f"  Factors    : {y.round(5)}  (hard bounds)")
 
     assert result["L1_norm"] <= L1_LIM + 1e-5
@@ -924,10 +1017,11 @@ def test_tight_hard_turnover():
 
     assert result is not None
     assert "optimal" in result["status"]
-    print(f"  Turnover   : {result['turnover']:.4f}  (limit {LIMIT})")
+    turnover = calc_turnover(result, w_drift)
+    print(f"  Turnover   : {turnover:.4f}  (limit {LIMIT})")
     diff = np.max(np.abs(result["weights"] - w_drift))
     print(f"  Max |w-w0| : {diff:.6f}")
-    assert result["turnover"] <= LIMIT + 1e-5
+    assert turnover <= LIMIT + 1e-5
     print("  PASS: Weights very close to w_drift")
 
 
@@ -989,6 +1083,7 @@ def run_all():
     print(f"  factor_bounds    : shape={factor_bounds_onesided.shape}  (one-sided)")
 
     baseline = test_baseline()
+    test_legacy_result_schema_baseline()
 
     # L1
     test_l1_soft(baseline)
@@ -1010,6 +1105,7 @@ def run_all():
 
     # Factor bounds
     test_factor_bounds_hard()
+    test_legacy_result_schema_transaction_cost()
     test_factor_bounds_soft()
     test_factor_bounds_soft_increasing_penalty()
     test_factor_bounds_one_sided()
