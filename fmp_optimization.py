@@ -170,6 +170,115 @@ def solve_fmp_cplex(B, D, F, target_exposure, time_limit=60):
         return {"error": str(exc), "status": "Error"}
 
 
+def solve_fmp_l2_cplex(B, D, F, target_exposure, time_limit=60):
+    """
+    Solves the FMP problem by minimizing the L2 norm of w, subject to factor exposure constraints.
+
+    Objective:
+        Minimize: (1/2) * w^T * w  (i.e., 0.5 * ||w||^2)
+    Subject to:
+        B^T * w = target_exposure
+
+    D and F are accepted for interface compatibility but not used in the objective.
+
+    Args:
+        B (np.ndarray): Factor loadings (N, K).
+        D (np.ndarray): Idiosyncratic variances (N,). Not used in objective.
+        F (np.ndarray): Factor Covariance Matrix (K, K). Not used in objective.
+        target_exposure (np.ndarray): Target exposures (K,).
+        time_limit (float): Time limit in seconds.
+
+    Returns:
+        dict: Results including weights, objective (0.5 * ||w||^2), and timings.
+    """
+    t0 = time.time()
+    n, k = B.shape
+
+    # Validation
+    if len(D) != n: return {"error": "D dimension mismatch"}
+    if len(target_exposure) != k: return {"error": "Target dimension mismatch"}
+    if F.shape != (k, k): return {"error": "F dimension mismatch"}
+
+    try:
+        prob = cplex.Cplex()
+
+        prob.set_log_stream(None)
+        prob.set_results_stream(None)
+        prob.set_warning_stream(None)
+
+        prob.parameters.qpmethod.set(prob.parameters.qpmethod.values.barrier)
+        prob.parameters.threads.set(0)
+        prob.parameters.timelimit.set(time_limit)
+
+        prob.objective.set_sense(prob.objective.sense.minimize)
+
+        # 1. Variables: w_i continuous, unbounded
+        prob.variables.add(
+            obj=[0.0] * n,
+            lb=[-cplex.infinity] * n,
+            ub=[cplex.infinity] * n,
+            names=[f"w_{i}" for i in range(n)]
+        )
+
+        # 2. Quadratic Objective: 0.5 * w^T * I * w  (L2 norm squared)
+        # CPLEX computes 0.5 * xQx, so pass Q = I  =>  (i, i, 1.0)
+        q_triplets = [(i, i, 1.0) for i in range(n)]
+        prob.objective.set_quadratic_coefficients(q_triplets)
+
+        # 3. Constraints: B^T * w = target_exposure
+        lin_exprs = []
+        rhs = []
+        senses = []
+        names = []
+
+        for j in range(k):
+            col_vals = B[:, j].tolist()
+            lin_exprs.append(cplex.SparsePair(ind=list(range(n)), val=col_vals))
+            rhs.append(float(target_exposure[j]))
+            senses.append("E")
+            names.append(f"fac_{j}")
+
+        prob.linear_constraints.add(
+            lin_expr=lin_exprs,
+            senses=senses,
+            rhs=rhs,
+            names=names
+        )
+
+        setup_time = time.time() - t0
+
+        # Solve
+        solve_start = time.time()
+        prob.solve()
+        solve_end = time.time()
+
+        # Extract results
+        status = prob.solution.get_status_string()
+        if prob.solution.get_status() in [1, 101, 102]:
+            w_opt = np.array(prob.solution.get_values())
+
+            # solver_obj = 0.5 * ||w||^2
+            solver_obj = prob.solution.get_objective_value()
+            total_objective = solver_obj
+
+        else:
+            w_opt = None
+            total_objective = None
+            solver_obj = None
+
+        return {
+            "weights": w_opt,
+            "objective": total_objective,  # 0.5 * ||w||^2
+            "specific_risk_component": solver_obj,
+            "status": status,
+            "solve_time": solve_end - solve_start,
+            "total_time": time.time() - t0
+        }
+
+    except cplex.CplexError as exc:
+        return {"error": str(exc), "status": "Error"}
+
+
 def generate_data(n, k):
     np.random.seed(42)  # Fixed for reproducibility
     
@@ -221,5 +330,40 @@ def run_benchmark():
             
     print("-" * 60)
 
+def run_benchmark_l2():
+    test_sizes = [
+        (50, 5),
+        (5000, 10),
+        (10000, 20),
+        (20000, 25)
+    ]
+    
+    print(f"\n{'='*60}")
+    print("L2 Norm Minimization Benchmark")
+    print(f"{'='*60}")
+    print(f"{'Assets':<8} | {'Factors':<8} | {'Time (s)':<10} | {'0.5*||w||^2':<12} | {'ExpErr':<10}")
+    print("-" * 60)
+    
+    for n, k in test_sizes:
+        B, D, F, t = generate_data(n, k)
+        
+        res = solve_fmp_l2_cplex(B, D, F, t)
+        
+        if 'error' in res:
+             print(f"{n:<8} | {k:<8} | {'ERROR':<10} | {res['error']}")
+        elif res['weights'] is None:
+             print(f"{n:<8} | {k:<8} | {'FAIL':<10} | {res['status']}")
+        else:
+            w = res['weights']
+            
+            # Verify constraints
+            realized_exp = B.T @ w
+            exp_err = np.max(np.abs(realized_exp - t))
+            
+            print(f"{n:<8} | {k:<8} | {res['total_time']:<10.4f} | {res['objective']:<12.6f} | {exp_err:<10.2e}")
+            
+    print("-" * 60)
+
 if __name__ == "__main__":
     run_benchmark()
+    run_benchmark_l2()
