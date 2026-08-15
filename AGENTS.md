@@ -39,3 +39,7 @@ Prerequisites: `python` (3.11+), `numpy`, and IBM `cplex` available in the activ
 - Mirror current history style: concise, imperative commit subjects (for example, `Add ...`, `Support ...`).
 - Keep commits focused: one behavior change plus related tests/docs.
 - In PRs, include: purpose, files changed, commands executed, and notable output/solver assumptions.
+
+## Workflow
+
+- Default workflow: `strict-workflow`.
